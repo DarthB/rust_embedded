@@ -1,11 +1,19 @@
 MEMORY
 {
   /* NOTE 1 K = 1 KiBi = 1024 bytes */
-  /* TODO Adjust these memory regions to match your device memory layout */
-  /* These values correspond to the LM3S6965, one of the few devices QEMU can emulate */
-  FLASH : ORIGIN = 0x00000000, LENGTH = 256K
-  RAM : ORIGIN = 0x20000000, LENGTH = 64K
+  /* see: https://www.st.com/en/microcontrollers-microprocessors/stm32f7x7.html */
+  /* see ./embedded_docs/rm... */
+  FLASH : ORIGIN = 0x08000000, LENGTH = 2048K
+
+  /* TJ: we use one description for three different kind of RAM here, not sure if that will lead to problems later */
+  /* RAM : ORIGIN = 0x20000000, LENGTH = 512K */
+  RAM : ORIGIN = 0x20000000, LENGTH = 128K
+  SRAM1 : ORIGIN = 0x20020000, LENGTH = 368K
+  SRAM2 : ORIGIN = 0x2007C000, LENGTH = 16K
 }
+
+_ram_start = ORIGIN(RAM);
+_stack_start = ORIGIN(SRAM2) + LENGTH(SRAM2);
 
 /* This is where the call stack will be allocated. */
 /* The stack is of the full descending type. */

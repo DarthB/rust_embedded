@@ -1,4 +1,7 @@
-target extended-remote :3333
+target remote :3333
+# the following does not disconnect when program halts
+#target extended-remote :3333
+
 
 # print demangled symbols
 set print asm-demangle on
@@ -38,3 +41,6 @@ load
 
 # start the process but immediately halt the processor
 stepi
+
+#no instead run to main breakpont
+#continue
