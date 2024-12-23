@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 
-use cortex_m_semihosting::{hprint, hprintln};
 // pick a panicking behavior
 use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
                      // use panic_abort as _; // requires nightly
@@ -91,28 +90,4 @@ fn main() -> ! {
             counter = 0;
         }
     }
-
-    /*
-    let mut roses = "blue";
-
-    set_blue_led(&pep, true);
-    hprintln!("Hello, world! I'm {}...", roses);
-
-    // wait for 0.5 secs
-    // Very approximate, not recommended for precision or efficiency
-
-    for _ in 0..250_000 {
-        // Assuming 168 MHz clock and some cycles per loop
-        cortex_m::asm::nop(); // No operation, just wait
-    }
-
-    //setup_button(&pep);
-    //while pep.GPIOC.idr.read().idr13().bit_is_set() {}
-
-    roses = "red";
-    //hprintln!("... and {}!", roses);
-    set_red_led(&pep, true);
-
-    loop {}
-    */
 }

@@ -4,6 +4,8 @@
 Cargo.lock
 target/
 
+embedded_docs/*.pdf
+
 # editor files
 .vscode/*
 !.vscode/*.md

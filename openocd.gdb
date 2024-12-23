@@ -40,7 +40,10 @@ monitor arm semihosting enable
 load
 
 # start the process but immediately halt the processor
-stepi
+# stepi
 
-#no instead run to main breakpont
-#continue
+# no instead run to main breakpont
+continue
+
+# uncomment to immediately run program 
+# continue
