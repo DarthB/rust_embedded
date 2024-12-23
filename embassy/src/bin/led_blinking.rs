@@ -1,26 +1,47 @@
 #![no_std]
 #![no_main]
 
-use defmt::*;
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use embassy_executor::Spawner;
-use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_time::Timer;
+use embassy_stm32::{
+    exti::ExtiInput,
+    gpio::{AnyPin, Level, Output, Pin, Pull, Speed},
+};
+use embassy_time::{Duration, Timer};
 use {defmt_rtt as _, panic_probe as _};
 
-#[embassy_executor::main]
-async fn main(_spawner: Spawner) {
-    let p = embassy_stm32::init(Default::default());
-    info!("Hello World!");
+static BLINK_MS: AtomicU32 = AtomicU32::new(0);
 
-    let mut led = Output::new(p.PB7, Level::High, Speed::Low);
+#[embassy_executor::task]
+async fn led_task(led: AnyPin) {
+    let mut led = Output::new(led, Level::High, Speed::Low);
 
     loop {
-        info!("high");
-        led.set_high();
-        Timer::after_millis(300).await;
+        let del_var = BLINK_MS.load(Ordering::Relaxed);
+        Timer::after(Duration::from_millis(del_var.into())).await;
+        led.toggle();
+    }
+}
 
-        info!("low");
-        led.set_low();
-        Timer::after_millis(300).await;
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_stm32::init(Default::default());
+    //let button = Input::new(p.PC13, Pull::None);
+    let mut button = ExtiInput::new(p.PC13, p.EXTI13, Pull::Down);
+
+    // store standard frequency
+    let mut del_var = 2000;
+    BLINK_MS.store(del_var, Ordering::Relaxed);
+
+    spawner.spawn(led_task(p.PB7.degrade())).unwrap();
+
+    loop {
+        button.wait_for_rising_edge().await;
+        del_var = del_var - 300_u32;
+        if del_var < 500_u32 {
+            del_var = 2000_u32;
+        }
+        BLINK_MS.store(del_var, Ordering::Relaxed);
     }
 }
