@@ -3,8 +3,10 @@
 .gdb_history
 Cargo.lock
 target/
+vendor/
 
 embedded_docs/*.pdf
+Notes.md
 
 # editor files
 .vscode/*

@@ -9,6 +9,11 @@ name = "led_blinking"
 test = false
 bench = false
 
+#[[bin]]
+#name = "uart_echoing"
+#test = false
+#bench = false
+
 
 [dependencies]
 # Important: stm32f767zi is the chip name used here and it has to be changed if another stm is used instead
@@ -45,6 +50,8 @@ embassy-time = { version = "0.3.2", features = [
 
 defmt = "0.3"
 defmt-rtt = "0.4"
+
+heapless = "0.8"
 
 cortex-m = { version = "0.7.6", features = [
     "inline-asm",

@@ -1,14 +1,17 @@
 #![no_std]
 #![no_main]
 
+use core::fmt::Write;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_executor::Spawner;
 use embassy_stm32::{
     exti::ExtiInput,
     gpio::{AnyPin, Level, Output, Pin, Pull, Speed},
+    usart::{Config, UartTx},
 };
 use embassy_time::{Duration, Timer};
+use heapless::String;
 use {defmt_rtt as _, panic_probe as _};
 
 static BLINK_MS: AtomicU32 = AtomicU32::new(0);
@@ -36,12 +39,28 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(led_task(p.PB7.degrade())).unwrap();
 
+    let mut usart = UartTx::new(p.USART3, p.PD8, p.DMA1_CH4, Config::default()).unwrap();
+
+    let mut value: u8 = 0;
+    let mut msg: String<16> = String::new();
     loop {
         button.wait_for_rising_edge().await;
-        del_var = del_var - 300_u32;
+        del_var -= 300_u32;
         if del_var < 500_u32 {
             del_var = 2000_u32;
         }
         BLINK_MS.store(del_var, Ordering::Relaxed);
+
+        // Format Message
+        core::writeln!(&mut msg, "\rVAL: {:03}", value).unwrap();
+
+        // Transmit Message
+        usart.write(msg.as_bytes()).await.unwrap();
+
+        // Update Value Parameter
+        value = value.wrapping_add(1);
+
+        // Clear String for next message
+        msg.clear();
     }
 }
