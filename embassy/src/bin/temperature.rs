@@ -1,111 +1,78 @@
 #![no_std]
 #![no_main]
 
-use core::fmt::Write;
-use core::str::FromStr;
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
-use embassy_stm32::mode::Async;
 
 use embassy_sync::channel::Channel;
-use embassy_sync::channel::Sender;
-use embassy_sync::channel::Receiver;
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::mutex::Mutex;
 
 use embassy_executor::Spawner;
+use embassy_stm32::mode::Async;
+use embassy_stm32::bind_interrupts;
 use embassy_stm32::{
-    bind_interrupts,
     exti::ExtiInput,
     gpio::{AnyPin, Level, Output, Pin, Pull, Speed},
     usart::{Config, Uart, UartRx, UartTx},
 };
 use embassy_time::{Duration, Timer};
-use heapless::String;
 use {defmt_rtt as _, panic_probe as _};
+use cortex_m_semihosting::hprintln;
 
-use cortex_m_semihosting::{debug, hprintln};
+use nucleo_f767zi::led;
+use nucleo_f767zi::led::{LedState, LedStateSync};
+use nucleo_f767zi::led::LedSignal;
 
-use shared::LEDState;
-use shared::NucleoLEDState;
+use nucleo_f767zi::cmd::str_to_command;
+use nucleo_f767zi::cmd::{CommandChannel, CommandSender, CommandReceiver};
+use nucleo_f767zi::cmd::Commands::*;
 
-use shared::Commands::UART_STATUS_REPORT;
-use shared::Commands::LED;
+use nucleo_f767zi::setup_usart_developer_console;
+use nucleo_f767zi::uart::parse_uart_tx_as_utf8;
 
 static STATUS_INTERVAL_MS: AtomicU32 = AtomicU32::new(10000);
 
-static LED_STATE: Mutex<ThreadModeRawMutex, NucleoLEDState> = Mutex::new(NucleoLEDState {
-    red: LEDState::Manual(false),
-    green: LEDState::Manual(false),
-    blue: LEDState::Manual(false),
-});
+static LED_STATE_RED: LedStateSync = LedStateSync::new(LedState::Manual(false));
+static LED_STATE_GREEN: LedStateSync = LedStateSync::new(LedState::Manual(false));
+static LED_STATE_BLUE: LedStateSync = LedStateSync::new(LedState::Manual(false));
 
-static SEND_OVER: AtomicU8 = AtomicU8::new(0);
-/*
-const SEND_OVER_NONE: u8 = 0;
-const SEND_OVER_UART: u8 = 1;
-const SEND_OVER_ETH: u8 = 2;
-const SEND_OVER_CAN: u8 = 4;
- */
+static SIGNAL_RED: LedSignal = LedSignal::new();
+static SIGNAL_GREEN: LedSignal = LedSignal::new();
+static SIGNAL_BLUE: LedSignal = LedSignal::new();
 
-type CommandChannel = Channel<ThreadModeRawMutex, shared::Commands, 64>;
-type CommandSender = Sender<'static, ThreadModeRawMutex, shared::Commands, 64>;
-type CommandReceiver = Receiver<'static, ThreadModeRawMutex, shared::Commands, 64>;
 static CHANNEL_COMMANDS: CommandChannel = Channel::new();
 
-fn led_func(led_out: &mut Output, state: &LEDState) {
-    match state {
-        LEDState::Manual(flag) => {
-            if *flag {
-                led_out.set_high();
-            } else {
-                led_out.set_low();
-            }
-        }
-        _ => {}
-    }
+#[embassy_executor::task(pool_size=3)]
+async fn led_wrapper(pin: AnyPin, synced_state: &'static LedStateSync, signal: &'static LedSignal) {
+    let led = Output::new(pin, Level::Low, Speed::Low);
+    led::led_controller_simple(led, synced_state, signal).await;
 }
 
 #[embassy_executor::task]
-async fn led_task(red_led: AnyPin, green_led: AnyPin, blue_led: AnyPin) {
-    let mut red_led = Output::new(red_led, Level::Low, Speed::Low);
-    let mut green_led = Output::new(green_led, Level::Low, Speed::Low);
-    let mut blue_led = Output::new(blue_led, Level::Low, Speed::Low);
-
-    loop {
-        Timer::after(Duration::from_millis(250)).await;
-        
-        let (r,g,b) = {
-            let state = LED_STATE.lock().await;
-            (state.red, state.green, state.blue)
-        };
-
-
-        led_func(&mut red_led, &r);
-        led_func(&mut green_led, &g);
-        led_func(&mut blue_led, &b);
-    }
-}
-
-#[embassy_executor::task]
-async fn command_executor(command_receiver: CommandReceiver) {
+async fn command_executor(
+    command_receiver: CommandReceiver,
+    signal_red: &'static LedSignal,
+    signal_green: &'static LedSignal,
+    signal_blue: &'static LedSignal,
+) {
     loop {
         let cmd = command_receiver.receive().await;
         match cmd {
-            UART_STATUS_REPORT(ms) => {
+            UartStatusReport(ms) => {
                 hprintln!("Changed UART reporting to {}ms", ms);
                 STATUS_INTERVAL_MS.store(ms, Ordering::Relaxed);
             }
-            LED(id, new_state) => {
+            Led(id, new_state) => {
                 {
-                    let mut unlocked = LED_STATE.lock().await;
-                    let state: &mut LEDState = match id {
-                        1 => &mut unlocked.red,
-                        2 => &mut unlocked.green,
-                        3 => &mut unlocked.blue,
+                    let (mut unlocked, sig) = match id {
+                        1 => (LED_STATE_RED.lock().await, signal_red),
+                        2 => (LED_STATE_GREEN.lock().await, signal_green),
+                        3 => (LED_STATE_BLUE.lock().await, signal_blue),
                         _ => { return; }
                     };
-                    *state = new_state;    
+
+                    *unlocked = new_state;
+                    drop(unlocked);
+                    sig.signal(());
                 }
             }
             _ => {}
@@ -113,69 +80,13 @@ async fn command_executor(command_receiver: CommandReceiver) {
     }
 }
 
-fn str_to_led_state(txt: &str) -> Option<shared::LEDState> {
-    match txt {
-        "off" => Some(shared::LEDState::Manual(false)),
-        "on" => Some(shared::LEDState::Manual(true)),
-        _ => None
-    }
-}
-
-fn str_to_command(msg: &str) -> Option<shared::Commands> {
-     // Compare the trimmed message string
-    if  msg.starts_with("light") {
-        let color = msg.split(' ').nth(1).unwrap();
-        let func = msg.split(' ').nth(2).unwrap();
-        let inner = str_to_led_state(func);
-        if inner.is_none() {
-            return None;
-        }
-        let inner = inner.unwrap();
-        match color {
-            "red" => {
-                Some(shared::Commands::LED(1, inner))
-            },
-            "green" => {
-                Some(shared::Commands::LED(2, inner))
-            }
-            "blue" => {
-                Some(shared::Commands::LED(3, inner))
-            }
-            _ => None,
-        }
-    } else if msg.starts_with("status") {
-        let number = msg.split(' ').nth(1).unwrap();
-        let number: u32 = number.parse().unwrap();
-        Some(shared::Commands::UART_STATUS_REPORT(number))
-    } else {
-        hprintln!("{} command unknown!", msg);
-        None
-    }
-}
-
 #[embassy_executor::task]
-async fn uart_cmd_receiver(mut usart_rx: UartRx<'static, Async>, command_sender: CommandSender) {
-    
-    let mut buf: [u8; 16] = [0; 16];
-
+async fn uart_receiver_and_cmd_forwarder(mut usart_rx: UartRx<'static, Async>, command_sender: CommandSender) {
+    let mut buf: [u8; 48] = [0; 48];
     loop {
-        let res = usart_rx.read_until_idle(&mut buf).await;
-        let msg = match res {
-            Ok(len) => {
-                match core::str::from_utf8(&buf[..len]) {
-                    Ok(msg) => {
-                        msg.trim()
-                    },
-                    Err(_) => {
-                        hprintln!("Received invalid utf-8 over USART, ignore transmission");
-                        continue;
-                    },
-                }
-            }
-            Err(_e) => {
-                hprintln!("USART related error, ignore transmission");
-                continue;
-            }
+        let msg = match parse_uart_tx_as_utf8(&mut usart_rx, &mut buf).await {
+            Ok(msg) => msg,
+            Err(_) => continue,
         };
 
         if let Some(cmd) = str_to_command(msg) {
@@ -189,7 +100,7 @@ async fn uart_cmd_receiver(mut usart_rx: UartRx<'static, Async>, command_sender:
 }
 
 #[embassy_executor::task]
-async fn uart_status_report(mut usart_tx: UartTx<'static, Async>) {
+async fn uart_status_report_transmitter(mut usart_tx: UartTx<'static, Async>) {
     loop {
         let interval: u64 = STATUS_INTERVAL_MS.load(Ordering::Relaxed).into();
         if interval == 0 {
@@ -207,37 +118,38 @@ async fn main(spawner: Spawner) {
     //let button = Input::new(p.PC13, Pull::None);
     let mut button = ExtiInput::new(p.PC13, p.EXTI13, Pull::Down);
 
-    hprintln!("Hello, world!");
+    hprintln!("Hello, embedded world!");
 
-    // show status via LEDs
-    spawner.spawn(led_task(p.PB14.degrade(), p.PB0.degrade(), p.PB7.degrade())).unwrap();
+    // spawn the main logic driven by a channel of commands
+    spawner.spawn(command_executor(
+        CHANNEL_COMMANDS.receiver(), 
+        &SIGNAL_RED, 
+        &SIGNAL_GREEN, 
+        &SIGNAL_BLUE)).unwrap();
 
+    // setup LED controllers, based on shared state data
+    spawner.spawn(led_wrapper(p.PB14.degrade(), 
+        &LED_STATE_RED, 
+        &SIGNAL_RED)).unwrap();
+    spawner.spawn(led_wrapper(p.PB0.degrade(), 
+        &LED_STATE_GREEN, 
+        &SIGNAL_GREEN)).unwrap();
+    spawner.spawn(led_wrapper(p.PB7.degrade(), 
+        &LED_STATE_BLUE, 
+        &SIGNAL_BLUE)).unwrap();
+
+    // start developer usart 
     bind_interrupts!(struct Irqs {
         USART3 => embassy_stm32::usart::InterruptHandler<embassy_stm32::peripherals::USART3>;
     });
-    
-    // setup usart for controller
-    let mut usart = Uart::new(
-        p.USART3,
-        p.PD9, // rx
-        p.PD8, // tx
-        Irqs,
-        p.DMA1_CH4, // tx
-        p.DMA1_CH1, // rx
-        Config::default(),
-    ).expect("USART generation failed");
-
+    let mut usart = setup_usart_developer_console!(p, Irqs);
     usart.write(b"UART Controller started, write commands.\r\n").await.unwrap();
     
-    // spawn the main logic driven by a channel of commands
-    spawner.spawn(command_executor(CHANNEL_COMMANDS.receiver())).unwrap();
-
     // spawn a task for uart sending and receiving each
     let (tx, rx) = usart.split();
-    spawner.spawn(uart_cmd_receiver(rx, CHANNEL_COMMANDS.sender())).unwrap();
-    spawner.spawn(uart_status_report(tx)).unwrap();
+    spawner.spawn(uart_receiver_and_cmd_forwarder(rx, CHANNEL_COMMANDS.sender())).unwrap();
+    spawner.spawn(uart_status_report_transmitter(tx)).unwrap();
     
-
     loop {
         button.wait_for_rising_edge().await;
     }
