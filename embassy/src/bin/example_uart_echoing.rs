@@ -1,3 +1,7 @@
+//! Embassy example for getting USART running on the NUCLEO-F767ZI
+//! 
+//! You need to setup putty or a similar program to connect over the serial protocol
+
 #![no_std]
 #![no_main]
 //#![feature(type_alias_impl_trait)]

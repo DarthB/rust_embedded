@@ -1,3 +1,7 @@
+//! First embassy example: Using LED blinking and switching frequency with the user button.
+//! 
+//! This runs on a NUCLEO-F767ZI 
+
 #![no_std]
 #![no_main]
 
