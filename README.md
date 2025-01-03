@@ -1,6 +1,6 @@
 # Xmas Side Project 2024/25 - Embedded Rust on STM32-NUCLEO-F767ZI
 
-This repository is a xmas holiday side project on the development board STM32-NUCELO-F767ZI. I use this git repository to document my exploration of the Rust embedded world with the asynchronous framework [Embassy](https://embassy.dev/).
+This repository is a xmas holiday side project on the development board STM32-NUCELO-F767ZI. This git repository documents the exploration of the Rust embedded world with the asynchronous framework [Embassy](https://embassy.dev/).
 
 **Table of Contents**
 
@@ -13,16 +13,17 @@ This repository is a xmas holiday side project on the development board STM32-NU
     - [Uart Echoing](#uart-echoing)
     - [Sensor Platform (Main Project)](#sensor-platform-main-project)
   - [Datasheets, References and Manuals](#datasheets-references-and-manuals)
+  - [License - Dual Licensing Apache or MIT at your choosing](#license---dual-licensing-apache-or-mit-at-your-choosing)
 
 ## Hardware Setup
 
-The used hardware is shown in the picture below. On the right you see a A STM32-NUCELO-F767ZI it is connected to my PC via micro USB. The bread board on the left side has a power control, although it is powered by the NUCLEO at this picture. Continuing from bottom to top, the red wires connect to a 4.7k resistance each to act as starting line for SCL and SDA of the I2C bus (white and black wires). The small IC next is a BH1750FVI light sensor. The next sensor is a DS18B20 temperature sensor that uses the 1-Wire Bus protocol. 
+The used hardware is shown in the picture below. On the right you see a A STM32-NUCELO-F767ZI it is connected to a PC via micro USB. The bread board on the left side has a power control, although it is powered by the NUCLEO in this picture. Continuing from bottom to top, the red wires connect to a 4.7k resistance each to act as starting line for SCL and SDA of the I2C bus (white and black wires). The small IC connected to the bus is a BH1750FVI light sensor. The next sensor is a DS18B20 temperature sensor that uses the 1-Wire Bus protocol... 
 
 <img src="./imgs/nucleo_and_bread_board.jpg" width="600" />
 
 ## Supported Features and Roadmap
 
-The main project is a sensor platform powered by [Embassy](https://embassy.dev/). It supports the following features:
+The main project shall is a sensor platform powered by [Embassy](https://embassy.dev/). It supports the following features so far and has an open roadmap:
 
 - [x] Module for simple LED controls (on/toggle/off)
 - [x] Remote LED control via UART
@@ -35,7 +36,7 @@ The main project is a sensor platform powered by [Embassy](https://embassy.dev/)
   - [ ] Control display light by Lux measured by DS18B20
 - [ ] Build small HTTP server for status reports over ETH module of NUCLEO
 
-Besides the main project, this repository consists of the following sub-projects:
+Besides the main project, this repository consists of the following sub-projects, mainly used as starters and proof of concepts to ensure things work the way intended:
 
 - LED Counter based upon embedded Rust Book, uses PAC-level abstraction.
 - LED Blinker based upon embassy starting example, uses async and embassy to implement a binary LED based counting.
@@ -43,9 +44,16 @@ Besides the main project, this repository consists of the following sub-projects
 
 ## How to get started
 
+We start with the sub-projects for testing from simple to complex to finally arrive at the sensor platform project.
+
+1. LED Counter
+2. LED Blinker
+3. UART Echoing
+4. Sensor Plattform
+
 Assumptions: 
 
-- Hardware sanity check with the official STM tools is done, e.g. STM Cube Programmer can be used to connect over STLink.
+- Hardware sanity check with the official STM tools done successfully. That means the STM Cube Programmer software can be used to connect over STLink.
 - Installation as described in [Rust Embedded Book - Hardware](https://docs.rust-embedded.org/book/start/hardware.html) which is based on the [Cortex Quickstart Template](https://github.com/rust-embedded/cortex-m-quickstart).
 
 ### LED Counter
@@ -56,7 +64,7 @@ The LED Counter project acts as a
 2. Switch to folder `cd led_counter`
 3. Execute `cargo run --release`
 
-You should see `Breakpoint 4, 0x08000254 in main ()` in gdb. Type `continue` and the coounting started.
+You should see `Breakpoint 4, 0x08000254 in main ()` in gdb. Type `continue` and the counting started.
 
 Observe the binary counting using GREEN LED for 1 bit, BLUE for 2nd bit and RED for 3rd bit. **It's to fast isn't it?** - we use busy loop here so you can redo it without release:
 
@@ -70,7 +78,9 @@ LED Blinker acted as a starter for getting in touch with the [Embassy Framework]
 
 1. If not running, start OpenOCD `openocd -f interface/stlink.cfg -f target/stm32f7x.cfg`
 2. Switch to folder `cd embassy`
-3. Execute `cargo run --bin led_blinking --release`
+3. Execute `cargo run --bin example_led_blinking --release`
+
+Use gdb to continue from main.
 
 You should witness the blue LED blinking and you can use the blue user button to raise the frequency of the blinking. You can [see the code here](./embassy/src/bin/example_led_blinking.rs)
 
@@ -80,7 +90,9 @@ Uart Echoing was a small project to get UART running within embassy. As this is 
 
 1. If not running, start OpenOCD `openocd -f interface/stlink.cfg -f target/stm32f7x.cfg`
 2. Switch to folder `cd embassy`
-3. Execute `cargo run --bin led_blinking --release`
+3. Execute `cargo run --bin example_uart_echoing --release`
+
+Use gdb to continue from main.
 
 Next we have to setup a remote program that is used to connect over the UART protocol using the USB connection to the PC of the NUCLEO. I used putty on Windows for that with the following settings:
 
@@ -120,6 +132,16 @@ status <number in ms>
 number in ms = the ms between each UART based status report, default is 10000ms
 ```
 
+Here you see an example output over the UART console:
+
+<img src="./imgs/control_light.PNG" />
+
+1. If not running, start OpenOCD `openocd -f interface/stlink.cfg -f target/stm32f7x.cfg`
+2. Switch to folder `cd embassy`
+3. Execute `cargo run --bin example_sensors --release`
+
+Use gdb to continue from main.
+
 You can [see the main code file here](./embassy/src/bin/example_sensors.rs)
 
 ## Datasheets, References and Manuals
@@ -132,3 +154,11 @@ A list of data sheets, references and manuals for the hardware setup used in thi
 - [STM32 - Shared Reference](https://www.st.com/resource/en/datasheet/stm32f777bi.pdf)
 - [STM32F76xxx - RM0410 Reference manual](https://www.st.com/resource/en/reference_manual/rm0410-stm32f76xxx-and-stm32f77xxx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [I2C-bus - Specification and User Manual Rev. 7](https://www.nxp.com/docs/en/user-guide/UM10204.pdf)
+
+## License - Dual Licensing Apache or MIT at your choosing
+
+All code in this repository is dual-licensed under either:
+
+MIT License ([LICENSE-MIT](./LICENSE-MIT) or http://opensource.org/licenses/MIT)
+Apache License, Version 2.0 ([LICENSE-APACHE](./LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+at your option. This means you can select the license you prefer! This dual-licensing approach is the de-facto standard in the Rust ecosystem and there are very good reasons to include both.
