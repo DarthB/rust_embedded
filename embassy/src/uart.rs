@@ -1,6 +1,3 @@
-//use core::str::Utf8Error;
-//use thiserror::Error;
-
 use heapless::String;
 
 use embassy_stm32::mode::Async;
@@ -10,7 +7,7 @@ use cortex_m_semihosting::hprintln;
 
 #[macro_export]
 macro_rules! setup_usart_developer_console {
-    ($p:ident, $irqs:ident) => {
+    ($p:ident, $irqs:ident, $config:expr) => {
         // setup usart
         Uart::new(
             $p.USART3,
@@ -19,21 +16,10 @@ macro_rules! setup_usart_developer_console {
             $irqs,
             $p.DMA1_CH4, // tx
             $p.DMA1_CH1, // rx
-            Config::default(),
+            $config,
         ).expect("USART generation failed")
     }
 }
-
-/* 
-#[derive(Error, Debug)]
-pub enum UartParseError {
-    #[error("UART stream was invalid utf8")]
-    Utf8(#[from] Utf8Error),
-    
-    #[error("UART internal error")]
-    Usart(#[from] embassy_stm32::usart::Error),
-}
-*/
 
 pub async fn parse_uart_tx_as_utf8<'a, const N: usize>(
     usart_rx: &mut UartRx<'static, Async>, 

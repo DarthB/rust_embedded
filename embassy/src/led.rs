@@ -17,6 +17,9 @@ use embassy_futures::select::select;
 
 pub type LedSignal = Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, ()>;
 
+/// LedState protected by Mutex
+pub type LedStateSync = Mutex<ThreadModeRawMutex, LedState>;
+
 #[derive(Clone, Copy)]
 pub enum LedState {
     /// the led is either on or off
@@ -25,9 +28,6 @@ pub enum LedState {
     /// the led toogles every specified amount of ms
     Toggle(u32),
 }
-
-/// LedState protected by Mutex
-pub type LedStateSync = Mutex<ThreadModeRawMutex, LedState>;
 
 impl Default for LedState {
     fn default() -> Self {

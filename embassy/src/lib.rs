@@ -9,6 +9,7 @@
 //! - [x] UART Status Reports
 //! - [x] UART Command Interpretation
 
+pub mod bh1750fvi;
 pub mod led;
 pub mod uart;
 pub mod cmd;

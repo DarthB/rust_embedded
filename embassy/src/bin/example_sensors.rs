@@ -2,21 +2,34 @@
 #![no_main]
 
 use core::sync::atomic::{AtomicU32, Ordering};
+use core::fmt::Write;
+use heapless::String;
 
+use static_cell::{StaticCell};
 
 use embassy_sync::channel::Channel;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex;
+
+use embassy_futures::select::select;
+use embassy_futures::select::Either;
 
 use embassy_executor::Spawner;
 use embassy_stm32::mode::Async;
 use embassy_stm32::bind_interrupts;
+use embassy_stm32::i2c::I2c;
 use embassy_stm32::{
     exti::ExtiInput,
     gpio::{AnyPin, Level, Output, Pin, Pull, Speed},
-    usart::{Config, Uart, UartRx, UartTx},
+    usart::{Uart, UartRx, UartTx},
 };
+use embassy_stm32::usart::Config as UsartConfig;
+use embassy_stm32::i2c::Config as I2cConfig;
+
 use embassy_time::{Duration, Timer};
 use {defmt_rtt as _, panic_probe as _};
 use cortex_m_semihosting::hprintln;
+
 
 use nucleo_f767zi::led;
 use nucleo_f767zi::led::{LedState, LedStateSync};
@@ -25,9 +38,23 @@ use nucleo_f767zi::led::LedSignal;
 use nucleo_f767zi::cmd::str_to_command;
 use nucleo_f767zi::cmd::{CommandChannel, CommandSender, CommandReceiver};
 use nucleo_f767zi::cmd::Commands::*;
+use nucleo_f767zi::cmd::Commands;
+use nucleo_f767zi::cmd::LightSensorCommands;
+
+use nucleo_f767zi::bh1750fvi::LightSensorState;
+use nucleo_f767zi::bh1750fvi::LightSensorStateSync;
+use nucleo_f767zi::bh1750fvi::SyncedLightSensorValueType;
+use nucleo_f767zi::bh1750fvi::LightSensorCollectSignal;
+
+use nucleo_f767zi::bh1750fvi::{single_measurement, continious_measurement, power_off};
+use nucleo_f767zi::bh1750fvi::BH1750_ADDR_L;
 
 use nucleo_f767zi::setup_usart_developer_console;
 use nucleo_f767zi::uart::parse_uart_tx_as_utf8;
+
+use embassy_stm32::time::Hertz;
+
+type I2cAsyncMutex = mutex::Mutex<CriticalSectionRawMutex, I2c<'static, Async>>;
 
 static STATUS_INTERVAL_MS: AtomicU32 = AtomicU32::new(10000);
 
@@ -39,7 +66,12 @@ static SIGNAL_RED: LedSignal = LedSignal::new();
 static SIGNAL_GREEN: LedSignal = LedSignal::new();
 static SIGNAL_BLUE: LedSignal = LedSignal::new();
 
+static LIGHT_SENSOR_STATE: LightSensorStateSync = LightSensorStateSync::new(LightSensorState::PowerOff);
+static LIGHT_SENSOR_VALUE: SyncedLightSensorValueType = SyncedLightSensorValueType::new(None);
+static LIGHT_SENSOR_SIGNAL: LightSensorCollectSignal = LightSensorCollectSignal::new();
+
 static CHANNEL_COMMANDS: CommandChannel = Channel::new();
+
 
 #[embassy_executor::task(pool_size=3)]
 async fn led_wrapper(pin: AnyPin, synced_state: &'static LedStateSync, signal: &'static LedSignal) {
@@ -53,6 +85,8 @@ async fn command_executor(
     signal_red: &'static LedSignal,
     signal_green: &'static LedSignal,
     signal_blue: &'static LedSignal,
+    signal_light: &'static LightSensorCollectSignal,
+    i2c: &'static I2cAsyncMutex,
 ) {
     loop {
         let cmd = command_receiver.receive().await;
@@ -73,6 +107,30 @@ async fn command_executor(
                     *unlocked = new_state;
                     drop(unlocked);
                     sig.signal(());
+                }
+            }
+            LightSensor(sub_cmd) => {
+                match sub_cmd {
+                    LightSensorCommands::Off => {
+                        signal_light.signal(());
+                        power_off(BH1750_ADDR_L, &mut *(i2c.lock().await), &LIGHT_SENSOR_STATE).await;
+                    }
+                    LightSensorCommands::SingleMeasurment => {
+                        signal_light.signal(());
+                        let lux = single_measurement(BH1750_ADDR_L, &mut *(i2c.lock().await), &LIGHT_SENSOR_STATE).await;
+                        hprintln!("{} Lux light intensity", lux);
+
+                        {
+                            let mut unlock = LIGHT_SENSOR_VALUE.lock().await;
+                            *unlock = Some(lux);
+                        }
+                    }
+                    LightSensorCommands::ContiniousMeasurement => {
+                        hprintln!("Light Continous");
+                        signal_light.signal(());
+                        continious_measurement(BH1750_ADDR_L, &mut *(i2c.lock().await), &LIGHT_SENSOR_STATE).await;
+
+                    }
                 }
             }
             _ => {}
@@ -106,7 +164,30 @@ async fn uart_status_report_transmitter(mut usart_tx: UartTx<'static, Async>) {
         if interval == 0 {
             Timer::after(Duration::from_millis(250)).await;
         } else {
-            usart_tx.write(b"Status TODO\r\n").await.unwrap();
+            hprintln!("UART Report!");
+
+            let mut msg: String<256> = String::new();
+            msg.push_str("Status: Light Sensor ").unwrap();
+            {
+                let unlocked = LIGHT_SENSOR_STATE.lock().await;
+                let temp: &str = (*unlocked).as_str();
+                msg.push_str(temp).unwrap();
+                
+            }
+
+            {
+                let unlocked = LIGHT_SENSOR_VALUE.lock().await;
+                let mut buf: String<16> = String::new();
+                if let Some(value) = *unlocked {
+                    core::write!(&mut buf, " - {} Lux", value).unwrap();
+                    msg.push_str(buf.as_str()).unwrap();
+                } else {
+                    msg.push_str(" - No sensor value yet").unwrap();
+                }
+            }
+
+            msg.push_str("\r\n").unwrap();
+            usart_tx.write(&msg.into_bytes()).await.unwrap();
             Timer::after(Duration::from_millis(interval)).await;
         }
     }
@@ -120,13 +201,6 @@ async fn main(spawner: Spawner) {
 
     hprintln!("Hello, embedded world!");
 
-    // spawn the main logic driven by a channel of commands
-    spawner.spawn(command_executor(
-        CHANNEL_COMMANDS.receiver(), 
-        &SIGNAL_RED, 
-        &SIGNAL_GREEN, 
-        &SIGNAL_BLUE)).unwrap();
-
     // setup LED controllers, based on shared state data
     spawner.spawn(led_wrapper(p.PB14.degrade(), 
         &LED_STATE_RED, 
@@ -138,11 +212,29 @@ async fn main(spawner: Spawner) {
         &LED_STATE_BLUE, 
         &SIGNAL_BLUE)).unwrap();
 
-    // start developer usart 
+    // bind interrupts
     bind_interrupts!(struct Irqs {
         USART3 => embassy_stm32::usart::InterruptHandler<embassy_stm32::peripherals::USART3>;
+        I2C1_EV => embassy_stm32::i2c::EventInterruptHandler<embassy_stm32::peripherals::I2C1>;
+        I2C1_ER => embassy_stm32::i2c::ErrorInterruptHandler<embassy_stm32::peripherals::I2C1>;
     });
-    let mut usart = setup_usart_developer_console!(p, Irqs);
+    
+    // start i2c for sensor:
+    let i2c: I2c<'static, Async> = I2c::new(
+        p.I2C1,
+        p.PB8, // scl
+        p.PB9, // sda
+        Irqs,
+        p.DMA1_CH6, // dma tx
+        p.DMA1_CH0, // dma rx
+        Hertz(100_000), // SCL clock frequency !?
+        I2cConfig::default(),
+    );
+    static I2C: StaticCell<I2cAsyncMutex> = StaticCell::new();
+    let i2c = I2C.init(mutex::Mutex::new(i2c));
+
+    // start developer usart 
+    let mut usart = setup_usart_developer_console!(p, Irqs, UsartConfig::default());
     usart.write(b"UART Controller started, write commands.\r\n").await.unwrap();
     
     // spawn a task for uart sending and receiving each
@@ -150,7 +242,58 @@ async fn main(spawner: Spawner) {
     spawner.spawn(uart_receiver_and_cmd_forwarder(rx, CHANNEL_COMMANDS.sender())).unwrap();
     spawner.spawn(uart_status_report_transmitter(tx)).unwrap();
     
+    spawner.spawn(process_light_sensor(
+        &LIGHT_SENSOR_SIGNAL,
+        i2c
+    )).unwrap();
+
+    // spawn the main logic driven by a channel of commands
+    spawner.spawn(command_executor(
+        CHANNEL_COMMANDS.receiver(), 
+        &SIGNAL_RED, 
+        &SIGNAL_GREEN, 
+        &SIGNAL_BLUE,
+        &LIGHT_SENSOR_SIGNAL,
+        i2c)).unwrap();
+
     loop {
         button.wait_for_rising_edge().await;
+        CHANNEL_COMMANDS.sender().send(Commands::LightSensor(LightSensorCommands::SingleMeasurment)).await;
+        Timer::after(Duration::from_millis(50)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn process_light_sensor(signal: &'static LightSensorCollectSignal, i2c: &'static I2cAsyncMutex) {
+    loop {
+        let state = {
+            *(LIGHT_SENSOR_STATE.lock().await)
+        };
+
+        match state {
+            LightSensorState::ContiniousMeasurement => {
+                let mut rx_buf: [u8; 2] = [0; 2];
+                let res = {
+                    let i2c = &mut (*i2c.lock().await);
+                    let f1 = i2c.read(BH1750_ADDR_L, &mut rx_buf);
+                    let f2 = signal.wait();
+                    select(f1, f2).await
+                };
+
+                if let Either::First(res) = res {
+                    if let Err(err) = res {
+                        hprintln!("Write Error: {:?} at addr={}", err, BH1750_ADDR_L);
+                    } else {
+                        let mut unlocked = LIGHT_SENSOR_VALUE.lock().await;
+                        *unlocked = Some(((rx_buf[0] as u16) << 8) | rx_buf[1] as u16);
+                    }
+                } else {
+                    hprintln!("Continious i2c reading interrupted by signal");
+                }
+                
+                Timer::after(Duration::from_millis(150)).await;
+            }
+            LightSensorState::PowerOff | LightSensorState::SingleMeasurement => signal.wait().await,
+        }
     }
 }
